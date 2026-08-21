@@ -32,7 +32,21 @@ jobs:
           chmod +x gradlew
 
       - name: Build Debug APK
-        run: ./gradlew assembleDebug --stacktrace
+        run: ./gradlew assembleDebug --stacktrace 2>&1 | tee /tmp/build_output.log
+
+      - name: Report build errors on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          grep -a -E "^e: |error:|FAILED|What went wrong|Execution failed|Caused by" /tmp/build_output.log | head -80 > /tmp/errors.txt || true
+          {
+            echo "Build failed. Error excerpt:"
+            echo '```'
+            head -c 6000 /tmp/errors.txt
+            echo '```'
+          } > /tmp/issue_body.md
+          gh issue create --title "Build failure report" --body-file /tmp/issue_body.md || true
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
