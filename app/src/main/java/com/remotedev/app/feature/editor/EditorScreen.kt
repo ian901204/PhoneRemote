@@ -134,7 +134,7 @@ private fun EditorView(viewModel: EditorViewModel, uiState: EditorViewModel.Edit
         }
         editorRef[0]?.subscribeEvent(ContentChangeEvent::class.java, receiver)
         onDispose {
-            editorRef[0]?.unsubscribeEvent(ContentChangeEvent::class.java, receiver)
+            // 編輯器隨 View 銷毀,直接 release 即可,無需逐一退訂
             editorRef[0]?.release()
         }
     }
