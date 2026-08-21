@@ -25,12 +25,18 @@ android {
         }
     }
     compileOptions {
+        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
+}
+
+// language-textmate 在 API < 33 需要 core library desugaring
+dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
 }
 
 dependencies {
@@ -63,8 +69,8 @@ dependencies {
     implementation("com.github.mwiede:jsch:0.2.17")
 
     // Editor
-    implementation("io.github.rosemoe.sora-editor:editor:0.23.3")
-    implementation("io.github.rosemoe.sora-editor:language-textmate:0.23.3")
+    implementation("io.github.Rosemoe.sora-editor:editor:0.23.6")
+    implementation("io.github.Rosemoe.sora-editor:language-textmate:0.23.6")
 
     // Network + JSON
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
