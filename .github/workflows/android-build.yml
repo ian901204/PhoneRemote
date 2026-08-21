@@ -49,6 +49,13 @@ jobs:
             echo '```'
           } > /tmp/issue_body.md
           gh issue create --title "Build failure report" --body-file /tmp/issue_body.md || true
+          cp /tmp/errors.txt build_errors.txt
+          git config user.email "actions@github.com"
+          git config user.name "github-actions"
+          git checkout -B build-report
+          git add build_errors.txt
+          git commit -m "build errors $(date -u +%FT%TZ)" || true
+          git push -f origin build-report || true
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
