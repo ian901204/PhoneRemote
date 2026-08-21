@@ -45,7 +45,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          grep -a -E "^e: |error:|FAILED|What went wrong|Execution failed|Caused by" /tmp/build_output.log | head -80 > /tmp/errors.txt || true
+          grep -a -E "^e: |error:|FAILED|What went wrong|Execution failed|Caused by|Could not|> " /tmp/build_output.log | head -120 > /tmp/errors.txt || true
+          echo "===== TAIL =====" >> /tmp/errors.txt
+          tail -60 /tmp/build_output.log >> /tmp/errors.txt
           {
             echo "Build failed. Error excerpt:"
             echo '```'
