@@ -4,6 +4,7 @@ import com.jcraft.jsch.ChannelExec
 import com.jcraft.jsch.ChannelSftp
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.JSchException
+import com.jcraft.jsch.KeyPair
 import com.jcraft.jsch.Session
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -43,6 +44,7 @@ class SshConnectionManager @Inject constructor() {
             mutex.withLock {
                 disconnectLocked()
                 val jsch = JSch()
+                var keyDiag = ""
                 if (!privateKey.isNullOrBlank()) {
                     // 正規化:統一換行、去頭尾空白、補結尾換行(PEM/OpenSSH 解析需要)
                     val normalizedKey = privateKey
@@ -50,6 +52,24 @@ class SshConnectionManager @Inject constructor() {
                         .replace('\r', '\n')
                         .trim() + "\n"
                     val keyBytes = normalizedKey.toByteArray(Charsets.UTF_8)
+                    // 先本地解析驗證,取得金鑰類型/指紋/是否加密,便於診斷
+                    val kp = try {
+                        KeyPair.load(jsch, keyBytes, null)
+                    } catch (e: JSchException) {
+                        null
+                    }
+                    if (kp == null) {
+                        throw IllegalStateException(
+                            "私鑰解析失敗:內容不是有效的私鑰。" +
+                                "請確認匯入的是「私鑰」檔(不是 .pub 公開金鑰)," +
+                                "格式為 OpenSSH 或 PEM(BEGIN OPENSSH/RSA/EC PRIVATE KEY),不支援 PuTTY .ppk",
+                        )
+                    }
+                    keyDiag = "金鑰類型=${kp.keyTypeName}, 指紋=${kp.fingerPrint}, 加密=${kp.isEncrypted}"
+                    if (kp.isEncrypted && passphrase.isNullOrEmpty()) {
+                        kp.dispose()
+                        throw IllegalStateException("此私鑰已加密,請在設定中填寫 Passphrase($keyDiag)")
+                    }
                     try {
                         if (passphrase.isNullOrEmpty()) {
                             jsch.addIdentity(user, keyBytes, null, null)
@@ -57,13 +77,13 @@ class SshConnectionManager @Inject constructor() {
                             jsch.addIdentity(user, keyBytes, null, passphrase.toByteArray(Charsets.UTF_8))
                         }
                     } catch (e: JSchException) {
+                        kp.dispose()
                         throw IllegalStateException(
-                            "私鑰解析失敗:${e.message}。" +
-                                "請確認是 OpenSSH 或 PEM 格式(BEGIN OPENSSH/RSA/EC PRIVATE KEY)," +
-                                "不支援 PuTTY .ppk;若私鑰有密碼請填 Passphrase",
+                            "私鑰解密失敗:${e.message}($keyDiag)。若私鑰有密碼請確認 Passphrase 正確",
                             e,
                         )
                     }
+                    kp.dispose()
                 }
                 val newSession = jsch.getSession(user, host, port)
                 if (privateKey.isNullOrBlank() && !password.isNullOrEmpty()) {
@@ -78,7 +98,22 @@ class SshConnectionManager @Inject constructor() {
                 config["server_host_key"] =
                     "ssh-ed25519,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,rsa-sha2-512,rsa-sha2-256,ssh-rsa,ssh-dss"
                 newSession.setConfig(config)
-                newSession.connect(15_000)
+                try {
+                    newSession.connect(15_000)
+                } catch (e: JSchException) {
+                    val msg = e.message ?: ""
+                    if (msg.contains("Auth fail", ignoreCase = true)) {
+                        throw IllegalStateException(
+                            "SSH 認證失敗:$msg。$keyDiag。" +
+                                "請確認:1) 使用者名稱「$user」正確;" +
+                                "2) 此指紋對應的公鑰已加入 server 的 ~/.ssh/authorized_keys" +
+                                "(可在電腦上執行 ssh-keygen -lf 私鑰檔 比對指紋);" +
+                                "3) 若 key 有密碼,Passphrase 是否正確",
+                            e,
+                        )
+                    }
+                    throw e
+                }
 
                 val channel = newSession.openChannel("sftp") as ChannelSftp
                 channel.connect(15_000)
