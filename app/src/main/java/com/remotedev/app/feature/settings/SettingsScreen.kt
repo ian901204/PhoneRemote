@@ -1,23 +1,31 @@
 package com.remotedev.app.feature.settings
 
+import android.net.Uri
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
@@ -35,6 +43,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -152,14 +161,40 @@ fun SettingsScreen(
                     visualTransformation = PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                 )
-                SshAuthMethod.PRIVATE_KEY -> OutlinedTextField(
-                    value = sshKey,
-                    onValueChange = { sshKey = it },
-                    label = { Text("Private Key") },
-                    modifier = Modifier.fillMaxWidth(),
-                    minLines = 3,
-                    visualTransformation = PasswordVisualTransformation(),
-                )
+                SshAuthMethod.PRIVATE_KEY -> {
+                    OutlinedTextField(
+                        value = sshKey,
+                        onValueChange = { sshKey = it },
+                        label = { Text("Private Key") },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 3,
+                        visualTransformation = PasswordVisualTransformation(),
+                    )
+                    // 從檔案匯入私鑰(.pem / id_rsa / id_ed25519 等)
+                    val context = LocalContext.current
+                    val keyFilePicker = rememberLauncherForActivityResult(
+                        ActivityResultContracts.OpenDocument()
+                    ) { uri: Uri? ->
+                        uri ?: return@rememberLauncherForActivityResult
+                        runCatching {
+                            context.contentResolver.openInputStream(uri)?.use { input ->
+                                sshKey = input.readBytes().decodeToString().trim()
+                            }
+                        }.onFailure {
+                            Toast.makeText(context, "私鑰檔案讀取失敗: ${it.message}", Toast.LENGTH_LONG).show()
+                        }.onSuccess {
+                            Toast.makeText(context, "私鑰已匯入", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    OutlinedButton(
+                        onClick = { keyFilePicker.launch(arrayOf("*/*")) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(Icons.Default.FileOpen, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("匯入私鑰檔案")
+                    }
+                }
             }
 
             OutlinedTextField(
