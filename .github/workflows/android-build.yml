@@ -5,6 +5,10 @@ on:
     branches: [ main, master ]
   workflow_dispatch:   # 可在 Actions 頁手動觸發
 
+permissions:
+  contents: write
+  issues: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
