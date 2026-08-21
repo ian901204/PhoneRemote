@@ -69,3 +69,22 @@ jobs:
           name: RemoteDev-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           retention-days: 30
+
+      - name: Rename APK with version
+        run: |
+          VERSION="1.0.${{ github.run_number }}"
+          cp app/build/outputs/apk/debug/app-debug.apk "RemoteDev-v${VERSION}-debug.apk"
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: RemoteDev v${{ env.VERSION }}
+          body: |
+            自動建置的 Debug APK
+            - Commit: ${{ github.sha }}
+            - 建置時間(UTC): ${{ github.event.head_commit.timestamp }}
+          files: RemoteDev-v${{ env.VERSION }}-debug.apk
+          prerelease: false
+          generate_release_notes: true
