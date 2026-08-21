@@ -3,6 +3,7 @@ package com.remotedev.app.feature.ssh
 import com.jcraft.jsch.ChannelExec
 import com.jcraft.jsch.ChannelSftp
 import com.jcraft.jsch.JSch
+import com.jcraft.jsch.JSchException
 import com.jcraft.jsch.Session
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -43,11 +44,25 @@ class SshConnectionManager @Inject constructor() {
                 disconnectLocked()
                 val jsch = JSch()
                 if (!privateKey.isNullOrBlank()) {
-                    val keyBytes = privateKey.toByteArray(Charsets.UTF_8)
-                    if (passphrase.isNullOrEmpty()) {
-                        jsch.addIdentity(user, keyBytes, null, null)
-                    } else {
-                        jsch.addIdentity(user, keyBytes, null, passphrase.toByteArray(Charsets.UTF_8))
+                    // 正規化:統一換行、去頭尾空白、補結尾換行(PEM/OpenSSH 解析需要)
+                    val normalizedKey = privateKey
+                        .replace("\r\n", "\n")
+                        .replace('\r', '\n')
+                        .trim() + "\n"
+                    val keyBytes = normalizedKey.toByteArray(Charsets.UTF_8)
+                    try {
+                        if (passphrase.isNullOrEmpty()) {
+                            jsch.addIdentity(user, keyBytes, null, null)
+                        } else {
+                            jsch.addIdentity(user, keyBytes, null, passphrase.toByteArray(Charsets.UTF_8))
+                        }
+                    } catch (e: JSchException) {
+                        throw IllegalStateException(
+                            "私鑰解析失敗:${e.message}。" +
+                                "請確認是 OpenSSH 或 PEM 格式(BEGIN OPENSSH/RSA/EC PRIVATE KEY)," +
+                                "不支援 PuTTY .ppk;若私鑰有密碼請填 Passphrase",
+                            e,
+                        )
                     }
                 }
                 val newSession = jsch.getSession(user, host, port)
@@ -56,6 +71,12 @@ class SshConnectionManager @Inject constructor() {
                 }
                 val config = Properties()
                 config["StrictHostKeyChecking"] = "no"
+                // 相容舊版 SSH server:預設演算法清單中補上 ssh-rsa(SHA-1)
+                // mwiede JSch 預設停用 ssh-rsa,舊 server 只支援它時會 Auth fail
+                config["PubkeyAcceptedAlgorithms"] =
+                    "ssh-ed25519,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,rsa-sha2-512,rsa-sha2-256,ssh-rsa"
+                config["server_host_key"] =
+                    "ssh-ed25519,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,rsa-sha2-512,rsa-sha2-256,ssh-rsa,ssh-dss"
                 newSession.setConfig(config)
                 newSession.connect(15_000)
 
