@@ -65,7 +65,7 @@ class SshConnectionManager @Inject constructor() {
                                 "格式為 OpenSSH 或 PEM(BEGIN OPENSSH/RSA/EC PRIVATE KEY),不支援 PuTTY .ppk",
                         )
                     }
-                    keyDiag = "金鑰類型=${kp.keyTypeName}, 指紋=${kp.fingerPrint}, 加密=${kp.isEncrypted}"
+                    keyDiag = "金鑰類型=${keyTypeNameOf(kp.keyType)}, 指紋=${kp.fingerPrint}, 加密=${kp.isEncrypted}"
                     if (kp.isEncrypted && passphrase.isNullOrEmpty()) {
                         kp.dispose()
                         throw IllegalStateException("此私鑰已加密,請在設定中填寫 Passphrase($keyDiag)")
@@ -220,4 +220,13 @@ class SshConnectionManager @Inject constructor() {
             }
         }
     }
+}
+
+private fun keyTypeNameOf(type: Int): String = when (type) {
+    KeyPair.RSA -> "RSA"
+    KeyPair.DSA -> "DSA"
+    KeyPair.ECDSA -> "ECDSA"
+    KeyPair.ED25519 -> "ED25519"
+    KeyPair.ED448 -> "ED448"
+    else -> "未知($type)"
 }
