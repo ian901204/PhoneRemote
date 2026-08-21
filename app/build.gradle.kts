@@ -69,8 +69,8 @@ dependencies {
     implementation("com.github.mwiede:jsch:0.2.17")
 
     // Editor
-    implementation("io.github.Rosemoe.sora-editor:editor:0.23.6")
-    implementation("io.github.Rosemoe.sora-editor:language-textmate:0.23.6")
+    implementation("io.github.Rosemoe.sora-editor:editor:0.23.2")
+    implementation("io.github.Rosemoe.sora-editor:language-textmate:0.23.2")
 
     // Network + JSON
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
