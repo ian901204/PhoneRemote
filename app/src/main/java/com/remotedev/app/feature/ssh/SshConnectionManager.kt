@@ -52,9 +52,9 @@ class SshConnectionManager @Inject constructor(
         withContext(Dispatchers.IO) {
             mutex.withLock {
                 disconnectLocked()
-                if (Security.getProvider(BouncyCastleProvider.PROVIDER_NAME) == null) {
-                    Security.addProvider(BouncyCastleProvider())
-                }
+                // Android 內建殘缺版 BC provider(缺 X25519 等),需先移除再註冊完整版
+                Security.removeProvider(BouncyCastleProvider.PROVIDER_NAME)
+                Security.insertProviderAt(BouncyCastleProvider(), 1)
                 val client = SSHClient()
                 client.addHostKeyVerifier(PromiscuousVerifier())
                 client.connectTimeout = 15_000
