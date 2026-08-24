@@ -1,5 +1,9 @@
 package com.remotedev.app.feature.ssh
 
+import android.annotation.SuppressLint
+import android.webkit.JavascriptInterface
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -7,19 +11,14 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -28,14 +27,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 private val TerminalBackground = Color(0xFF000000)
-private val TerminalGreen = Color(0xFF33FF66)
 
 private val SPECIAL_KEYS = listOf(
     "ESC" to "ESC",
@@ -49,11 +46,12 @@ private val SPECIAL_KEYS = listOf(
     "→" to "RIGHT",
 )
 
+@SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun TerminalScreen(viewModel: SshViewModel = hiltViewModel()) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    var command by remember { mutableStateOf("") }
-    val listState = rememberLazyListState()
+    var webView by remember { mutableStateOf<WebView?>(null) }
+    var webReady by remember { mutableStateOf(false) }
 
     // Files 頁「在此開啟 Terminal」:進入本頁時 cd 到指定目錄
     LaunchedEffect(uiState.connected, uiState.shellActive) {
@@ -64,21 +62,28 @@ fun TerminalScreen(viewModel: SshViewModel = hiltViewModel()) {
         }
     }
 
-    // 輸出更新時捲到底部(限制保留行數避免記憶體膨脹)
-    val lines = remember(uiState.output) {
-        uiState.output.lines().let { if (it.size > 2000) it.takeLast(2000) else it }
-    }
-    LaunchedEffect(lines.size) {
-        if (lines.isNotEmpty()) {
-            listState.animateScrollToItem(lines.size - 1)
+    // Shell 輸出 → xterm.js
+    LaunchedEffect(webReady) {
+        if (!webReady) return@LaunchedEffect
+        val wv = webView ?: return@LaunchedEffect
+        // 重放緩衝(進入頁面前已有的輸出)
+        viewModel.getScrollback().forEach { b64 ->
+            wv.evaluateJavascript("writeB64('$b64')", null)
+        }
+        viewModel.shellOutput.collect { b64 ->
+            wv.evaluateJavascript("writeB64('$b64')", null)
         }
     }
 
+    DisposableEffect(Unit) {
+        onDispose { webView = null }
+    }
+
     Surface(modifier = Modifier.fillMaxSize(), color = TerminalBackground) {
-        Column(modifier = Modifier.fillMaxSize().padding(8.dp)) {
+        Column(modifier = Modifier.fillMaxSize()) {
             if (!uiState.connected) {
                 Column(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxSize().padding(16.dp),
                     verticalArrangement = Arrangement.Center,
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
@@ -97,59 +102,45 @@ fun TerminalScreen(viewModel: SshViewModel = hiltViewModel()) {
                     }
                 }
             } else {
-                LazyColumn(
-                    state = listState,
+                // xterm.js 終端(WebView)
+                AndroidView(
                     modifier = Modifier.weight(1f).fillMaxWidth(),
-                ) {
-                    items(lines) { line ->
-                        Text(
-                            text = line,
-                            color = TerminalGreen,
-                            fontFamily = FontFamily.Monospace,
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                }
+                    factory = { ctx ->
+                        WebView(ctx).apply {
+                            settings.javaScriptEnabled = true
+                            settings.domStorageEnabled = true
+                            addJavascriptInterface(object {
+                                @JavascriptInterface
+                                fun onInput(b64: String) {
+                                    val bytes = android.util.Base64.decode(
+                                        b64, android.util.Base64.NO_WRAP,
+                                    )
+                                    viewModel.sendToShell(String(bytes, Charsets.UTF_8))
+                                }
+                            }, "AndroidInput")
+                            webViewClient = object : WebViewClient() {
+                                override fun onPageFinished(view: WebView?, url: String?) {
+                                    webReady = true
+                                }
+                            }
+                            loadUrl("file:///android_asset/terminal.html")
+                            webView = this
+                        }
+                    },
+                )
 
                 // 特殊按鍵列(Esc / Tab / Ctrl / 方向鍵)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .horizontalScroll(rememberScrollState())
-                        .padding(top = 4.dp),
+                        .padding(4.dp),
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     SPECIAL_KEYS.forEach { (label, key) ->
                         OutlinedButton(onClick = { viewModel.sendSpecialKey(key) }) {
                             Text(label, style = MaterialTheme.typography.labelSmall)
                         }
-                    }
-                }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    TextField(
-                        value = command,
-                        onValueChange = { command = it },
-                        modifier = Modifier.weight(1f),
-                        singleLine = true,
-                        placeholder = { Text("輸入指令") },
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                        keyboardActions = KeyboardActions(onSend = {
-                            viewModel.sendCommand(command)
-                            command = ""
-                        }),
-                    )
-                    Button(
-                        onClick = {
-                            viewModel.sendCommand(command)
-                            command = ""
-                        },
-                        modifier = Modifier.padding(start = 8.dp),
-                    ) {
-                        Text("送出")
                     }
                 }
             }

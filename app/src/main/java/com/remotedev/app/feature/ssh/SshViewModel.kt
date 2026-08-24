@@ -1,5 +1,6 @@
 package com.remotedev.app.feature.ssh
 
+import android.util.Base64
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.remotedev.app.core.settings.SettingsRepository
@@ -7,8 +8,11 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
@@ -22,16 +26,6 @@ data class SshUiState(
     val output: String = "",
     val shellActive: Boolean = false,
 )
-
-// 過濾 ANSI escape sequences(顏色/游標控制),讓 PTY 輸出以純文字顯示
-private val ANSI_REGEX = Regex(
-    "\u001B\\[[;?0-9]*[ -/]*[@-~]" +      // CSI sequences
-        "|\u001B\\][^\u0007]*(\u0007|\u001B\\\\)" + // OSC sequences
-        "|\u001B[@-Z\\\\-_]",                       // 其他 ESC 序列
-)
-
-private fun stripAnsi(s: String): String =
-    s.replace(ANSI_REGEX, "").replace("\r\n", "\n").replace("\r", "\n")
 
 @HiltViewModel
 class SshViewModel @Inject constructor(
@@ -49,6 +43,28 @@ class SshViewModel @Inject constructor(
     val currentPath: StateFlow<String> = _currentPath.asStateFlow()
 
     private var shellReaderJob: Job? = null
+
+    /** Shell 原始輸出(base64 編碼的 UTF-8 bytes),供 xterm.js WebView 渲染 */
+    private val _shellOutput = MutableSharedFlow<String>(extraBufferCapacity = 512)
+    val shellOutput: SharedFlow<String> = _shellOutput.asSharedFlow()
+
+    /** 捲動緩衝:WebView 就緒前/重建後重放用 */
+    private val scrollback = ArrayDeque<String>()
+    private val maxScrollbackChunks = 500
+
+    private fun emitShellBytes(bytes: ByteArray, length: Int) {
+        val b64 = Base64.encodeToString(bytes, 0, length, Base64.NO_WRAP)
+        scrollback.addLast(b64)
+        while (scrollback.size > maxScrollbackChunks) scrollback.removeFirst()
+        _shellOutput.tryEmit(b64)
+    }
+
+    fun emitShellText(text: String) {
+        val b = text.toByteArray(Charsets.UTF_8)
+        emitShellBytes(b, b.size)
+    }
+
+    fun getScrollback(): List<String> = scrollback.toList()
 
     init {
         // 連線由 Singleton SshConnectionManager 持有;
@@ -74,13 +90,9 @@ class SshViewModel @Inject constructor(
                     passphrase = settings.sshPassphrase.ifBlank { null },
                 )
                 _uiState.update {
-                    it.copy(
-                        connected = true,
-                        connecting = false,
-                        error = null,
-                        output = it.output + "已連線 ${settings.sshUser}@${settings.sshHost}\n",
-                    )
+                    it.copy(connected = true, connecting = false, error = null)
                 }
+                emitShellText("已連線 ${settings.sshUser}@${settings.sshHost}\n")
                 loadDir(_currentPath.value)
                 startInteractiveShell()
             } catch (e: Exception) {
@@ -107,17 +119,14 @@ class SshViewModel @Inject constructor(
                             -1
                         }
                         if (n <= 0) break
-                        val text = stripAnsi(String(buf, 0, n, Charsets.UTF_8))
-                        _uiState.update { it.copy(output = it.output + text) }
+                        // 原始 bytes(含 ANSI 控制碼)直接交給 xterm.js 渲染
+                        emitShellBytes(buf, n)
                     }
-                    _uiState.update {
-                        it.copy(shellActive = false, output = it.output + "\n[Shell 已結束]\n")
-                    }
+                    _uiState.update { it.copy(shellActive = false) }
+                    emitShellText("\n[Shell 已結束]\n")
                 }
             } catch (e: Exception) {
-                _uiState.update {
-                    it.copy(output = it.output + "無法開啟互動 shell: ${e.message}\n")
-                }
+                emitShellText("無法開啟互動 shell: ${e.message}\n")
             }
         }
     }
