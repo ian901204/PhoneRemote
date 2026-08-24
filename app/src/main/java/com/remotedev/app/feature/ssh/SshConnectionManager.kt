@@ -135,6 +135,7 @@ class SshConnectionManager @Inject constructor(
     }
 
     private fun disconnectLocked() {
+        closeShell()
         runCatching { ssh?.disconnect() }
         ssh = null
     }
@@ -142,6 +143,53 @@ class SshConnectionManager @Inject constructor(
     private fun requireClient(): SSHClient =
         ssh?.takeIf { it.isConnected && it.isAuthenticated }
             ?: throw IllegalStateException("尚未連線,請先到 Terminal 頁連線")
+
+    // ---- 互動式 Shell(PTY) ----
+
+    class ShellSession(
+        val session: net.schmizz.sshj.connection.channel.direct.Session,
+        val shell: net.schmizz.sshj.connection.channel.direct.Session.Shell,
+    ) {
+        val output: java.io.InputStream get() = shell.inputStream
+        val input: java.io.OutputStream get() = shell.outputStream
+        fun close() {
+            runCatching { shell.close() }
+            runCatching { session.close() }
+        }
+    }
+
+    @Volatile
+    private var shellSession: ShellSession? = null
+
+    /** 開啟帶 PTY 的互動式 shell(會載入使用者的 .bashrc 等環境) */
+    suspend fun openShell(cols: Int = 120, rows: Int = 40): ShellSession = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            val client = requireClient()
+            shellSession?.close()
+            val sess = client.startSession()
+            sess.allocatePTY(
+                "xterm-256color", cols, rows, 0, 0,
+                java.util.Collections.emptyMap(),
+            )
+            val shell = sess.startShell()
+            ShellSession(sess, shell).also { shellSession = it }
+        }
+    }
+
+    /** 傳送原始按鍵/文字到互動式 shell */
+    suspend fun sendToShell(text: String) = withContext(Dispatchers.IO) {
+        shellSession?.let {
+            it.input.write(text.toByteArray(Charsets.UTF_8))
+            it.input.flush()
+        }
+    }
+
+    fun getShell(): ShellSession? = shellSession
+
+    fun closeShell() {
+        shellSession?.close()
+        shellSession = null
+    }
 
     suspend fun exec(command: String): String = withContext(Dispatchers.IO) {
         mutex.withLock {

@@ -1,5 +1,6 @@
 package com.remotedev.app.feature.ssh
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -9,10 +10,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
@@ -34,14 +37,29 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 private val TerminalBackground = Color(0xFF000000)
 private val TerminalGreen = Color(0xFF33FF66)
 
+private val SPECIAL_KEYS = listOf(
+    "ESC" to "ESC",
+    "TAB" to "TAB",
+    "Ctrl+C" to "CTRL_C",
+    "Ctrl+D" to "CTRL_D",
+    "Ctrl+Z" to "CTRL_Z",
+    "↑" to "UP",
+    "↓" to "DOWN",
+    "←" to "LEFT",
+    "→" to "RIGHT",
+)
+
 @Composable
 fun TerminalScreen(viewModel: SshViewModel = hiltViewModel()) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     var command by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
 
-    LaunchedEffect(uiState.output) {
-        val lines = uiState.output.lines()
+    // 輸出更新時捲到底部(限制保留行數避免記憶體膨脹)
+    val lines = remember(uiState.output) {
+        uiState.output.lines().let { if (it.size > 2000) it.takeLast(2000) else it }
+    }
+    LaunchedEffect(lines.size) {
         if (lines.isNotEmpty()) {
             listState.animateScrollToItem(lines.size - 1)
         }
@@ -74,7 +92,7 @@ fun TerminalScreen(viewModel: SshViewModel = hiltViewModel()) {
                     state = listState,
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                 ) {
-                    items(uiState.output.lines()) { line ->
+                    items(lines) { line ->
                         Text(
                             text = line,
                             color = TerminalGreen,
@@ -83,6 +101,22 @@ fun TerminalScreen(viewModel: SshViewModel = hiltViewModel()) {
                         )
                     }
                 }
+
+                // 特殊按鍵列(Esc / Tab / Ctrl / 方向鍵)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(top = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    SPECIAL_KEYS.forEach { (label, key) ->
+                        OutlinedButton(onClick = { viewModel.sendSpecialKey(key) }) {
+                            Text(label, style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -95,18 +129,18 @@ fun TerminalScreen(viewModel: SshViewModel = hiltViewModel()) {
                         placeholder = { Text("輸入指令") },
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                         keyboardActions = KeyboardActions(onSend = {
-                            viewModel.runCommand(command)
+                            viewModel.sendCommand(command)
                             command = ""
                         }),
                     )
                     Button(
                         onClick = {
-                            viewModel.runCommand(command)
+                            viewModel.sendCommand(command)
                             command = ""
                         },
                         modifier = Modifier.padding(start = 8.dp),
                     ) {
-                        Text("執行")
+                        Text("送出")
                     }
                 }
             }
