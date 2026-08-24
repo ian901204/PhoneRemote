@@ -1,8 +1,20 @@
 package com.remotedev.app.feature.ssh
 
 import android.content.Context
+import android.util.Base64
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -27,8 +39,10 @@ data class RemoteFile(
 
 /**
  * SSH 連線管理(sshj + BouncyCastle 實作)。
- * 對加密的 OpenSSH 格式私鑰(bcrypt + aes-ctr)有完整支援,Android 上比 JSch 可靠。
- * 所有方法皆執行緒安全(Mutex 保護),suspend 函數於 Dispatchers.IO 執行。
+ *
+ * 連線狀態 / shell reader / scrollback 皆由本 Singleton 持有,
+ * 所有頁面(Terminal / Files / Editor)共享同一份真實狀態,
+ * 避免各頁 ViewModel 各自維護副本造成的邏輯不一致。
  */
 @Singleton
 class SshConnectionManager @Inject constructor(
@@ -36,10 +50,21 @@ class SshConnectionManager @Inject constructor(
 ) {
     private val mutex = Mutex()
 
+    /** Manager 自己的 coroutine scope:shell reader / 背景工作不依附任何頁面 */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     @Volatile
     private var ssh: SSHClient? = null
 
-    fun isConnected(): Boolean = ssh?.let { it.isConnected && it.isAuthenticated } == true
+    // ---- 連線狀態(單一真實來源) ----
+
+    private val _connected = MutableStateFlow(false)
+    val connected: StateFlow<Boolean> = _connected.asStateFlow()
+
+    private val _shellActive = MutableStateFlow(false)
+    val shellActive: StateFlow<Boolean> = _shellActive.asStateFlow()
+
+    fun isConnected(): Boolean = _connected.value
 
     /** Files 頁「在此開啟 Terminal」要切換到的目錄(一次性消費) */
     @Volatile
@@ -135,19 +160,25 @@ class SshConnectionManager @Inject constructor(
                 }
 
                 ssh = client
+                _connected.value = true
+                // 前景服務:讓連線在 App 退到背景時仍保持
+                SshService.start(context, "$user@$host")
             }
         }
     }
 
     fun disconnect() {
-        runCatching { ssh?.disconnect() }
-        ssh = null
+        scope.launch {
+            mutex.withLock { disconnectLocked() }
+        }
+        SshService.stop(context)
     }
 
     private fun disconnectLocked() {
-        closeShell()
+        closeShellLocked()
         runCatching { ssh?.disconnect() }
         ssh = null
+        _connected.value = false
     }
 
     private fun requireClient(): SSHClient =
@@ -171,8 +202,34 @@ class SshConnectionManager @Inject constructor(
     @Volatile
     private var shellSession: ShellSession? = null
 
-    /** 開啟帶 PTY 的互動式 shell(會載入使用者的 .bashrc 等環境) */
-    suspend fun openShell(cols: Int = 120, rows: Int = 40): ShellSession = withContext(Dispatchers.IO) {
+    /** Shell 原始輸出(base64 編碼的 UTF-8 bytes),供 xterm.js WebView 渲染 */
+    private val _shellOutput = MutableSharedFlow<String>(extraBufferCapacity = 512)
+    val shellOutput: SharedFlow<String> = _shellOutput.asSharedFlow()
+
+    /** 捲動緩衝:WebView 就緒前/重建後重放用 */
+    private val scrollback = ArrayDeque<String>()
+    private val maxScrollbackChunks = 500
+
+    private fun emitShellBytes(bytes: ByteArray, length: Int) {
+        val b64 = Base64.encodeToString(bytes, 0, length, Base64.NO_WRAP)
+        synchronized(scrollback) {
+            scrollback.addLast(b64)
+            while (scrollback.size > maxScrollbackChunks) scrollback.removeFirst()
+        }
+        _shellOutput.tryEmit(b64)
+    }
+
+    fun emitShellText(text: String) {
+        val b = text.toByteArray(Charsets.UTF_8)
+        emitShellBytes(b, b.size)
+    }
+
+    fun getScrollback(): List<String> = synchronized(scrollback) { scrollback.toList() }
+
+    fun getShell(): ShellSession? = shellSession
+
+    /** 開啟帶 PTY 的互動式 shell(會載入使用者的 .bashrc 等環境),並由 manager 持有 reader loop */
+    suspend fun openShell(cols: Int = 120, rows: Int = 40): Unit = withContext(Dispatchers.IO) {
         mutex.withLock {
             val client = requireClient()
             shellSession?.close()
@@ -182,23 +239,63 @@ class SshConnectionManager @Inject constructor(
                 java.util.Collections.emptyMap(),
             )
             val shell = sess.startShell()
-            ShellSession(sess, shell).also { shellSession = it }
+            shellSession = ShellSession(sess, shell)
+            _shellActive.value = true
+            startReaderLocked(shellSession!!)
         }
     }
 
-    /** 傳送原始按鍵/文字到互動式 shell */
-    suspend fun sendToShell(text: String) = withContext(Dispatchers.IO) {
-        shellSession?.let {
-            it.input.write(text.toByteArray(Charsets.UTF_8))
-            it.input.flush()
+    /** reader loop 由 Singleton 持有:頁面切換/重建不影響讀取,斷線時統一更新狀態 */
+    private fun startReaderLocked(session: ShellSession) {
+        scope.launch {
+            val buf = ByteArray(8192)
+            while (isActive) {
+                val n = try {
+                    session.output.read(buf)
+                } catch (e: Exception) {
+                    -1
+                }
+                if (n <= 0) break
+                emitShellBytes(buf, n)
+            }
+            // shell 結束 = 連線已斷
+            _shellActive.value = false
+            _connected.value = false
+            emitShellText("\n[連線已中斷,請點「重新連線」]\n")
+            SshService.stop(context)
         }
     }
 
-    fun getShell(): ShellSession? = shellSession
+    /** 傳送原始按鍵/文字到互動式 shell(非 suspend,UI 直接呼叫) */
+    fun sendToShell(text: String) {
+        val s = shellSession ?: return
+        scope.launch {
+            try {
+                s.input.write(text.toByteArray(Charsets.UTF_8))
+                s.input.flush()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    /** PTY 視窗大小改變(terminal resize) */
+    fun resizeShell(cols: Int, rows: Int) {
+        val s = shellSession ?: return
+        scope.launch {
+            runCatching { s.session.changeWindowDimensions(cols, rows, 0, 0) }
+        }
+    }
 
     fun closeShell() {
+        scope.launch {
+            mutex.withLock { closeShellLocked() }
+        }
+    }
+
+    private fun closeShellLocked() {
         shellSession?.close()
         shellSession = null
+        _shellActive.value = false
     }
 
     suspend fun exec(command: String): String = withContext(Dispatchers.IO) {
@@ -261,52 +358,77 @@ class SshConnectionManager @Inject constructor(
 
     /**
      * 遞迴下載遠端資料夾到使用者挑選的本機目錄(SAF tree URI)。
+     * 兩階段:先掃描取得檔案總數(供確定進度條),再逐一傳輸。
      * 使用獨立的 SFTP channel,不佔用全域 mutex,下載期間 terminal 仍可使用。
-     * onProgress(檔名, 已完成數) 於每個檔案完成時呼叫。
+     * onScan(已掃描檔案數) 於掃描階段呼叫;onProgress(檔名, 已完成, 總數) 於傳輸階段呼叫。
      * @return 下載的檔案總數
      */
     suspend fun downloadFolder(
         remotePath: String,
         treeUri: android.net.Uri,
-        onProgress: (String, Int) -> Unit,
+        onScan: (Int) -> Unit,
+        onProgress: (String, Int, Int) -> Unit,
     ): Int = withContext(Dispatchers.IO) {
         val client = requireClient()
-        val rootDoc = androidx.documentfile.provider.DocumentFile.fromTreeUri(context, treeUri)
-            ?: throw IllegalStateException("無法存取所選的本機資料夾")
-        val rootName = remotePath.trimEnd('/').substringAfterLast('/').ifBlank { "download" }
-        val destRoot = rootDoc.createDirectory(rootName)
-            ?: throw IllegalStateException("無法在所選位置建立資料夾「$rootName」")
-
-        var count = 0
         client.newSFTPClient().use { sftp ->
-            fun recurse(remote: String, localDir: androidx.documentfile.provider.DocumentFile) {
+            // 階段一:掃描檔案清單
+            val entries = mutableListOf<Pair<String, String>>() // (遠端路徑, 相對路徑)
+            fun scan(remote: String, rel: String) {
                 for (info in sftp.ls(remote)) {
                     if (info.name == "." || info.name == "..") continue
                     val childRemote = remote.trimEnd('/') + "/" + info.name
+                    val childRel = if (rel.isEmpty()) info.name else "$rel/${info.name}"
                     if (info.attributes.type == FileMode.Type.DIRECTORY) {
-                        val sub = localDir.createDirectory(info.name) ?: continue
-                        recurse(childRemote, sub)
+                        scan(childRemote, childRel)
                     } else {
-                        val mime = java.net.URLConnection
-                            .guessContentTypeFromName(info.name)
-                            ?: "application/octet-stream"
-                        val outFile = localDir.createFile(mime, info.name) ?: continue
-                        context.contentResolver.openOutputStream(outFile.uri)?.use { os ->
-                            val rf = sftp.open(childRemote)
-                            try {
-                                rf.RemoteFileInputStream().use { it.copyTo(os) }
-                            } finally {
-                                rf.close()
-                            }
-                        }
-                        count++
-                        onProgress(info.name, count)
+                        entries.add(childRemote to childRel)
+                        onScan(entries.size)
                     }
                 }
             }
-            recurse(remotePath, destRoot)
+            scan(remotePath, "")
+            val total = entries.size
+
+            // 階段二:傳輸
+            val rootDoc = androidx.documentfile.provider.DocumentFile.fromTreeUri(context, treeUri)
+                ?: throw IllegalStateException("無法存取所選的本機資料夾")
+            val rootName = remotePath.trimEnd('/').substringAfterLast('/').ifBlank { "download" }
+            val destRoot = rootDoc.createDirectory(rootName)
+                ?: throw IllegalStateException("無法在所選位置建立資料夾「$rootName」")
+
+            var done = 0
+            val dirCache = HashMap<String, androidx.documentfile.provider.DocumentFile>()
+            fun dirFor(rel: String): androidx.documentfile.provider.DocumentFile? {
+                if (rel.isEmpty()) return destRoot
+                dirCache[rel]?.let { return it }
+                val parentRel = rel.substringBeforeLast('/', "")
+                val parent = dirFor(parentRel) ?: return null
+                val name = rel.substringAfterLast('/')
+                val d = parent.createDirectory(name) ?: parent.findFile(name)
+                if (d != null) dirCache[rel] = d
+                return d
+            }
+
+            for ((remote, rel) in entries) {
+                val dir = dirFor(rel.substringBeforeLast('/', "")) ?: continue
+                val name = rel.substringAfterLast('/')
+                val mime = java.net.URLConnection
+                    .guessContentTypeFromName(name)
+                    ?: "application/octet-stream"
+                val outFile = dir.createFile(mime, name) ?: continue
+                context.contentResolver.openOutputStream(outFile.uri)?.use { os ->
+                    val rf = sftp.open(remote)
+                    try {
+                        rf.RemoteFileInputStream().use { it.copyTo(os) }
+                    } finally {
+                        rf.close()
+                    }
+                }
+                done++
+                onProgress(name, done, total)
+            }
+            done
         }
-        count
     }
 
     suspend fun writeFile(path: String, content: String) {

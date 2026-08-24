@@ -1,18 +1,14 @@
 package com.remotedev.app.feature.ssh
 
-import android.util.Base64
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.remotedev.app.core.settings.SettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
@@ -20,11 +16,9 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 data class SshUiState(
-    val connected: Boolean = false,
     val connecting: Boolean = false,
     val error: String? = null,
     val output: String = "",
-    val shellActive: Boolean = false,
 )
 
 @HiltViewModel
@@ -36,41 +30,25 @@ class SshViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(SshUiState())
     val uiState: StateFlow<SshUiState> = _uiState.asStateFlow()
 
+    /** 連線 / shell 狀態直接來自 Singleton manager(所有頁面一致) */
+    val connected: StateFlow<Boolean> = ssh.connected
+    val shellActive: StateFlow<Boolean> = ssh.shellActive
+
+    /** Shell 輸出(base64)由 manager 持有,頁面重建不遺失 */
+    val shellOutput: SharedFlow<String> = ssh.shellOutput
+
+    fun getScrollback(): List<String> = ssh.getScrollback()
+
+    fun emitShellText(text: String) = ssh.emitShellText(text)
+
     private val _files = MutableStateFlow<List<RemoteFile>>(emptyList())
     val files: StateFlow<List<RemoteFile>> = _files.asStateFlow()
 
     private val _currentPath = MutableStateFlow("/")
     val currentPath: StateFlow<String> = _currentPath.asStateFlow()
 
-    private var shellReaderJob: Job? = null
-
-    /** Shell 原始輸出(base64 編碼的 UTF-8 bytes),供 xterm.js WebView 渲染 */
-    private val _shellOutput = MutableSharedFlow<String>(extraBufferCapacity = 512)
-    val shellOutput: SharedFlow<String> = _shellOutput.asSharedFlow()
-
-    /** 捲動緩衝:WebView 就緒前/重建後重放用 */
-    private val scrollback = ArrayDeque<String>()
-    private val maxScrollbackChunks = 500
-
-    private fun emitShellBytes(bytes: ByteArray, length: Int) {
-        val b64 = Base64.encodeToString(bytes, 0, length, Base64.NO_WRAP)
-        scrollback.addLast(b64)
-        while (scrollback.size > maxScrollbackChunks) scrollback.removeFirst()
-        _shellOutput.tryEmit(b64)
-    }
-
-    fun emitShellText(text: String) {
-        val b = text.toByteArray(Charsets.UTF_8)
-        emitShellBytes(b, b.size)
-    }
-
-    fun getScrollback(): List<String> = scrollback.toList()
-
     init {
-        // 連線由 Singleton SshConnectionManager 持有;
-        // 不同頁面(Terminal/Files)各有自己的 ViewModel,初始化時同步實際連線狀態
         if (ssh.isConnected()) {
-            _uiState.update { it.copy(connected = true, shellActive = ssh.getShell() != null) }
             loadDir(_currentPath.value)
         }
     }
@@ -89,64 +67,40 @@ class SshViewModel @Inject constructor(
                     privateKey = settings.sshKey.ifBlank { null },
                     passphrase = settings.sshPassphrase.ifBlank { null },
                 )
-                _uiState.update {
-                    it.copy(connected = true, connecting = false, error = null)
-                }
-                emitShellText("已連線 ${settings.sshUser}@${settings.sshHost}\n")
+                _uiState.update { it.copy(connecting = false, error = null) }
+                ssh.emitShellText("已連線 ${settings.sshUser}@${settings.sshHost}\n")
                 loadDir(_currentPath.value)
                 startInteractiveShell()
             } catch (e: Exception) {
                 _uiState.update {
-                    it.copy(connected = false, connecting = false, error = e.message ?: e.toString())
+                    it.copy(connecting = false, error = e.message ?: e.toString())
                 }
             }
         }
     }
 
-    /** 連線後開啟互動式 shell(PTY),持續讀取輸出 */
+    /** 連線後開啟互動式 shell(PTY);reader loop 由 manager 持有 */
     fun startInteractiveShell() {
-        if (_uiState.value.shellActive) return
+        if (ssh.shellActive.value) return
         viewModelScope.launch {
             try {
-                val shell = ssh.openShell()
-                _uiState.update { it.copy(shellActive = true) }
-                shellReaderJob = viewModelScope.launch(Dispatchers.IO) {
-                    val buf = ByteArray(8192)
-                    while (isActive) {
-                        val n = try {
-                            shell.output.read(buf)
-                        } catch (e: Exception) {
-                            -1
-                        }
-                        if (n <= 0) break
-                        // 原始 bytes(含 ANSI 控制碼)直接交給 xterm.js 渲染
-                        emitShellBytes(buf, n)
-                    }
-                    // shell 結束 = 連線已斷,標記斷線讓 UI 顯示重新連線
-                    _uiState.update { it.copy(shellActive = false, connected = false) }
-                    emitShellText("\n[連線已中斷,請點「重新連線」]\n")
-                }
+                ssh.openShell()
             } catch (e: Exception) {
-                emitShellText("無法開啟互動 shell: ${e.message}\n")
+                ssh.emitShellText("無法開啟互動 shell: ${e.message}\n")
             }
         }
     }
 
-    /** 傳送文字到互動 shell(一般輸入會附加換行) */
-    fun sendToShell(text: String) {
-        viewModelScope.launch {
-            try {
-                ssh.sendToShell(text)
-            } catch (e: Exception) {
-                _uiState.update { it.copy(output = it.output + "傳送失敗: ${e.message}\n") }
-            }
-        }
-    }
+    /** 傳送文字到互動 shell */
+    fun sendToShell(text: String) = ssh.sendToShell(text)
 
     /** 送出指令(附加 Enter) */
     fun sendCommand(cmd: String) {
         sendToShell(cmd + "\n")
     }
+
+    /** PTY 視窗大小改變 */
+    fun resizeShell(cols: Int, rows: Int) = ssh.resizeShell(cols, rows)
 
     /** 特殊按鍵 */
     fun sendSpecialKey(key: String) {
@@ -170,54 +124,12 @@ class SshViewModel @Inject constructor(
         ssh.pendingTerminalPath = path
     }
 
-    // ---- 資料夾下載 ----
-
-    data class DownloadState(
-        val folder: String,
-        val currentFile: String = "",
-        val count: Int = 0,
-        val done: Boolean = false,
-        val error: String? = null,
-    )
-
-    private val _downloadState = MutableStateFlow<DownloadState?>(null)
-    val downloadState: StateFlow<DownloadState?> = _downloadState.asStateFlow()
-
-    private var downloadJob: Job? = null
-
-    /** 遞迴下載遠端資料夾到本機 SAF tree URI(下載進行中會忽略新的請求) */
-    fun downloadFolder(remotePath: String, treeUri: android.net.Uri) {
-        val active = downloadJob?.isActive == true && _downloadState.value?.done != true
-        if (active) return
-        downloadJob = viewModelScope.launch(Dispatchers.IO) {
-            _downloadState.value = DownloadState(folder = remotePath)
-            try {
-                val n = ssh.downloadFolder(remotePath, treeUri) { file, c ->
-                    _downloadState.update { it?.copy(currentFile = file, count = c) }
-                }
-                _downloadState.update { it?.copy(done = true, count = n, currentFile = "") }
-            } catch (e: Exception) {
-                _downloadState.update {
-                    it?.copy(done = true, currentFile = "", error = e.message ?: e.toString())
-                }
-            }
-        }
-    }
-
-    /** 關閉下載進度提示(下載仍會在背景完成) */
-    fun dismissDownloadState() {
-        _downloadState.value = null
-    }
-
-
     /** Terminal 頁呼叫:取出待切換目錄(一次性) */
     fun consumePendingTerminalPath(): String? = ssh.consumePendingTerminalPath()
 
     fun disconnect() {
-        shellReaderJob?.cancel()
         ssh.closeShell()
         ssh.disconnect()
-        _uiState.update { it.copy(connected = false, shellActive = false) }
         _files.value = emptyList()
     }
 
@@ -254,8 +166,53 @@ class SshViewModel @Inject constructor(
         loadDir(parent)
     }
 
-    override fun onCleared() {
-        shellReaderJob?.cancel()
-        super.onCleared()
+    // ---- 資料夾下載 ----
+
+    data class DownloadState(
+        val folder: String,
+        val currentFile: String = "",
+        val count: Int = 0,
+        /** 0 = 掃描中(不確定進度) */
+        val total: Int = 0,
+        val done: Boolean = false,
+        val error: String? = null,
+    )
+
+    private val _downloadState = MutableStateFlow<DownloadState?>(null)
+    val downloadState: StateFlow<DownloadState?> = _downloadState.asStateFlow()
+
+    private var downloadJob: Job? = null
+
+    /** 遞迴下載遠端資料夾到本機 SAF tree URI(下載進行中會忽略新的請求) */
+    fun downloadFolder(remotePath: String, treeUri: android.net.Uri) {
+        val active = downloadJob?.isActive == true && _downloadState.value?.done != true
+        if (active) return
+        downloadJob = viewModelScope.launch(Dispatchers.IO) {
+            _downloadState.value = DownloadState(folder = remotePath)
+            try {
+                val n = ssh.downloadFolder(
+                    remotePath,
+                    treeUri,
+                    onScan = { scanned ->
+                        _downloadState.update { it?.copy(count = scanned) }
+                    },
+                    onProgress = { file, doneCount, total ->
+                        _downloadState.update {
+                            it?.copy(currentFile = file, count = doneCount, total = total)
+                        }
+                    },
+                )
+                _downloadState.update { it?.copy(done = true, count = n, currentFile = "") }
+            } catch (e: Exception) {
+                _downloadState.update {
+                    it?.copy(done = true, currentFile = "", error = e.message ?: e.toString())
+                }
+            }
+        }
+    }
+
+    /** 關閉下載進度提示(下載仍會在背景完成) */
+    fun dismissDownloadState() {
+        _downloadState.value = null
     }
 }

@@ -48,6 +48,7 @@ fun FileBrowserScreen(
     viewModel: SshViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val connected by viewModel.connected.collectAsStateWithLifecycle()
     val files by viewModel.files.collectAsStateWithLifecycle()
     val currentPath by viewModel.currentPath.collectAsStateWithLifecycle()
     val downloadState by viewModel.downloadState.collectAsStateWithLifecycle()
@@ -89,7 +90,7 @@ fun FileBrowserScreen(
         }
     }
 
-    if (!uiState.connected) {
+    if (!connected) {
         Column(
             modifier = Modifier.fillMaxSize().padding(16.dp),
             verticalArrangement = Arrangement.Center,
@@ -128,13 +129,17 @@ fun FileBrowserScreen(
             }
         }
 
-        // 下載進度條
+        // 下載進度條:掃描中顯示不確定動畫,傳輸中顯示確定百分比
         downloadState?.let { st ->
             if (!st.done) {
                 Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            text = "下載中:${st.folder}(已完成 ${st.count} 個檔案${if (st.currentFile.isNotEmpty()) ",正在:${st.currentFile}" else ""})",
+                            text = if (st.total == 0) {
+                                "掃描中:${st.folder}(已找到 ${st.count} 個檔案)"
+                            } else {
+                                "下載中:${st.count}/${st.total}(${st.currentFile})"
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             modifier = Modifier.weight(1f),
                             maxLines = 1,
@@ -147,7 +152,14 @@ fun FileBrowserScreen(
                             )
                         }
                     }
-                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    if (st.total == 0) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    } else {
+                        LinearProgressIndicator(
+                            progress = { st.count.toFloat() / st.total.coerceAtLeast(1) },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
                 }
             }
         }

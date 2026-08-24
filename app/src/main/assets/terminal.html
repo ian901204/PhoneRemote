@@ -2,13 +2,21 @@
 <html>
 <head>
 <meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css"/>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/jetbrains-mono@5.1.0/index.css"/>
 <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
 <style>
-  html, body, #terminal { margin: 0; padding: 0; height: 100%; background: #000; overflow: hidden; }
-  .xterm { padding: 4px; }
+  html, body, #terminal {
+    margin: 0; padding: 0; height: 100%;
+    background: #0d1117; overflow: hidden;
+  }
+  .xterm { padding: 10px 12px; }
+  .xterm-viewport::-webkit-scrollbar { width: 6px; }
+  .xterm-viewport::-webkit-scrollbar-thumb {
+    background: #30363d; border-radius: 3px;
+  }
 </style>
 </head>
 <body>
@@ -16,25 +24,69 @@
 <script>
   const term = new Terminal({
     cursorBlink: true,
+    cursorStyle: 'bar',
+    cursorWidth: 2,
     fontSize: 13,
-    fontFamily: 'Menlo, Consolas, monospace',
-    theme: {
-      background: '#000000',
-      foreground: '#d4ffd4',
-      cursor: '#33ff66',
-    },
-    scrollback: 5000,
+    fontFamily: '"JetBrains Mono", Menlo, Consolas, "Courier New", monospace',
+    fontWeight: 400,
+    fontWeightBold: 700,
+    lineHeight: 1.25,
+    letterSpacing: 0.5,
+    drawBoldTextInBrightColors: true,
+    scrollback: 10000,
     convertEol: false,
+    bellStyle: 'none',
+    smoothScrollDuration: 120,
+    theme: {
+      background: '#0d1117',
+      foreground: '#e6edf3',
+      cursor: '#58a6ff',
+      cursorAccent: '#0d1117',
+      selectionBackground: '#264f78',
+      black: '#484f58',
+      red: '#ff7b72',
+      green: '#3fb950',
+      yellow: '#d29922',
+      blue: '#58a6ff',
+      magenta: '#bc8cff',
+      cyan: '#39c5cf',
+      white: '#b1bac4',
+      brightBlack: '#6e7681',
+      brightRed: '#ffa198',
+      brightGreen: '#56d364',
+      brightYellow: '#e3b341',
+      brightBlue: '#79c0ff',
+      brightMagenta: '#d2a8ff',
+      brightCyan: '#56d4dd',
+      brightWhite: '#f0f6fc',
+    },
   });
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
   term.open(document.getElementById('terminal'));
-  fit.fit();
+
+  let lastCols = 0, lastRows = 0;
+  function doFit() {
+    try {
+      fit.fit();
+      if (term.cols !== lastCols || term.rows !== lastRows) {
+        lastCols = term.cols; lastRows = term.rows;
+        if (window.AndroidInput && AndroidInput.onResize) {
+          AndroidInput.onResize(term.cols, term.rows);
+        }
+      }
+    } catch (e) {}
+  }
+  doFit();
+  window.addEventListener('resize', doFit);
+  // 鍵盤彈出/收起時 WebView 高度改變
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', doFit);
+  }
+  setTimeout(doFit, 300);
 
   // 使用者輸入 → Android
   term.onData(function(d) { AndroidInput.onInput(btoa(unescape(encodeURIComponent(d)))); });
-
-  window.addEventListener('resize', function() { fit.fit(); });
 
   // Android → 終端 (base64 UTF-8)
   const decoder = new TextDecoder('utf-8');

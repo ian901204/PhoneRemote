@@ -36,7 +36,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
-private val TerminalBackground = Color(0xFF000000)
+private val TerminalBackground = Color(0xFF0D1117)
 
 private val SPECIAL_KEYS = listOf(
     "ESC" to "ESC",
@@ -54,13 +54,15 @@ private val SPECIAL_KEYS = listOf(
 @Composable
 fun TerminalScreen(viewModel: SshViewModel = hiltViewModel()) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val connected by viewModel.connected.collectAsStateWithLifecycle()
+    val shellActive by viewModel.shellActive.collectAsStateWithLifecycle()
     var webView by remember { mutableStateOf<WebView?>(null) }
     var webReady by remember { mutableStateOf(false) }
     var command by remember { mutableStateOf("") }
 
     // Files 頁「在此開啟 Terminal」:進入本頁時 cd 到指定目錄
-    LaunchedEffect(uiState.connected, uiState.shellActive) {
-        if (uiState.connected) {
+    LaunchedEffect(connected, shellActive) {
+        if (connected && shellActive) {
             viewModel.consumePendingTerminalPath()?.let { path ->
                 viewModel.sendCommand("cd \"$path\"")
             }
@@ -86,7 +88,7 @@ fun TerminalScreen(viewModel: SshViewModel = hiltViewModel()) {
 
     Surface(modifier = Modifier.fillMaxSize(), color = TerminalBackground) {
         Column(modifier = Modifier.fillMaxSize()) {
-            if (!uiState.connected || !uiState.shellActive) {
+            if (!connected || !shellActive) {
                 Column(
                     modifier = Modifier.fillMaxSize().padding(16.dp),
                     verticalArrangement = Arrangement.Center,
@@ -99,7 +101,7 @@ fun TerminalScreen(viewModel: SshViewModel = hiltViewModel()) {
                             modifier = Modifier.padding(bottom = 8.dp),
                         )
                     }
-                    if (uiState.connected && !uiState.shellActive && !uiState.connecting) {
+                    if (connected && !shellActive && !uiState.connecting) {
                         Text(
                             text = "連線已中斷",
                             color = MaterialTheme.colorScheme.error,
@@ -115,7 +117,7 @@ fun TerminalScreen(viewModel: SshViewModel = hiltViewModel()) {
                     ) {
                         Text(
                             if (uiState.connecting) "連線中..."
-                            else if (uiState.connected) "重新連線"
+                            else if (connected) "重新連線"
                             else "連線",
                         )
                     }
@@ -146,6 +148,11 @@ fun TerminalScreen(viewModel: SshViewModel = hiltViewModel()) {
                                         b64, android.util.Base64.NO_WRAP,
                                     )
                                     viewModel.sendToShell(String(bytes, Charsets.UTF_8))
+                                }
+
+                                @JavascriptInterface
+                                fun onResize(cols: Int, rows: Int) {
+                                    viewModel.resizeShell(cols, rows)
                                 }
                             }, "AndroidInput")
                             webViewClient = object : WebViewClient() {
