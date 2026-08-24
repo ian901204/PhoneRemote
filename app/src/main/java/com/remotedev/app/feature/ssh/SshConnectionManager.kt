@@ -282,7 +282,10 @@ class SshConnectionManager @Inject constructor(
     fun resizeShell(cols: Int, rows: Int) {
         val s = shellSession ?: return
         scope.launch {
-            runCatching { s.session.changeWindowDimensions(cols, rows, 0, 0) }
+            runCatching {
+                (s.session as? net.schmizz.sshj.connection.channel.direct.SessionChannel)
+                    ?.changeWindowDimensions(cols, rows, 0, 0)
+            }
         }
     }
 
