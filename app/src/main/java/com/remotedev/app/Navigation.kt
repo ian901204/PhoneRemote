@@ -105,9 +105,16 @@ fun RemoteDevNavHost() {
                 EditorScreen(path = backStackEntry.arguments?.getString("path"))
             }
             composable("files") {
-                FileBrowserScreen(onFileOpen = { p ->
-                    navController.navigate("editor?path=" + Uri.encode("ssh://$p"))
-                })
+                FileBrowserScreen(
+                    onFileOpen = { p ->
+                        navController.navigate("editor?path=" + Uri.encode("ssh://$p"))
+                    },
+                    onOpenTerminal = {
+                        navController.navigate("terminal") {
+                            launchSingleTop = true
+                        }
+                    },
+                )
             }
             composable("terminal") { TerminalScreen() }
             composable("chat") { ChatScreen() }

@@ -155,6 +155,14 @@ class SshViewModel @Inject constructor(
         sendToShell(seq)
     }
 
+    /** Files 頁呼叫:設定 Terminal 要 cd 到的目錄 */
+    fun setPendingTerminalPath(path: String) {
+        ssh.pendingTerminalPath = path
+    }
+
+    /** Terminal 頁呼叫:取出待切換目錄(一次性) */
+    fun consumePendingTerminalPath(): String? = ssh.consumePendingTerminalPath()
+
     fun disconnect() {
         shellReaderJob?.cancel()
         ssh.closeShell()

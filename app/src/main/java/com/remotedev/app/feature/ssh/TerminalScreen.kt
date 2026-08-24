@@ -55,6 +55,15 @@ fun TerminalScreen(viewModel: SshViewModel = hiltViewModel()) {
     var command by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
 
+    // Files 頁「在此開啟 Terminal」:進入本頁時 cd 到指定目錄
+    LaunchedEffect(uiState.connected, uiState.shellActive) {
+        if (uiState.connected) {
+            viewModel.consumePendingTerminalPath()?.let { path ->
+                viewModel.sendCommand("cd \"$path\"")
+            }
+        }
+    }
+
     // 輸出更新時捲到底部(限制保留行數避免記憶體膨脹)
     val lines = remember(uiState.output) {
         uiState.output.lines().let { if (it.size > 2000) it.takeLast(2000) else it }

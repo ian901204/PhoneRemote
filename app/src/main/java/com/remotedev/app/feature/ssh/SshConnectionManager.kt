@@ -41,6 +41,16 @@ class SshConnectionManager @Inject constructor(
 
     fun isConnected(): Boolean = ssh?.let { it.isConnected && it.isAuthenticated } == true
 
+    /** Files 頁「在此開啟 Terminal」要切換到的目錄(一次性消費) */
+    @Volatile
+    var pendingTerminalPath: String? = null
+
+    fun consumePendingTerminalPath(): String? {
+        val p = pendingTerminalPath
+        pendingTerminalPath = null
+        return p
+    }
+
     suspend fun connect(
         host: String,
         port: Int,

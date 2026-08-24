@@ -14,6 +14,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -31,6 +32,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 @Composable
 fun FileBrowserScreen(
     onFileOpen: (String) -> Unit,
+    onOpenTerminal: (String) -> Unit = {},
     viewModel: SshViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -60,8 +62,16 @@ fun FileBrowserScreen(
                 text = currentPath,
                 style = MaterialTheme.typography.bodyMedium,
                 fontFamily = FontFamily.Monospace,
-                modifier = Modifier.padding(start = 8.dp),
+                modifier = Modifier.padding(start = 8.dp).weight(1f),
+                maxLines = 1,
             )
+            // 在目前目錄開啟 Terminal
+            IconButton(onClick = {
+                viewModel.setPendingTerminalPath(currentPath)
+                onOpenTerminal(currentPath)
+            }) {
+                Icon(Icons.Filled.Terminal, contentDescription = "在此開啟 Terminal")
+            }
         }
         HorizontalDivider()
         LazyColumn(modifier = Modifier.fillMaxSize()) {
@@ -95,9 +105,23 @@ fun FileBrowserScreen(
                     )
                     Text(
                         text = file.name,
-                        modifier = Modifier.padding(start = 12.dp),
+                        modifier = Modifier.padding(start = 12.dp).weight(1f),
                         style = MaterialTheme.typography.bodyLarge,
                     )
+                    // 資料夾可直接在此開啟 Terminal(cd 到該目錄)
+                    if (file.isDirectory) {
+                        IconButton(onClick = {
+                            viewModel.setPendingTerminalPath(file.path)
+                            onOpenTerminal(file.path)
+                        }) {
+                            Icon(
+                                Icons.Filled.Terminal,
+                                contentDescription = "在此開啟 Terminal",
+                                tint = MaterialTheme.colorScheme.secondary,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                    }
                 }
                 HorizontalDivider()
             }
