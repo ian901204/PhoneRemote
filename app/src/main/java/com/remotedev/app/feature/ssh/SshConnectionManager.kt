@@ -257,6 +257,58 @@ class SshConnectionManager @Inject constructor(
         }
     }
 
+    // ---- 資料夾下載(SFTP 遞迴 → 本機 SAF 目錄) ----
+
+    /**
+     * 遞迴下載遠端資料夾到使用者挑選的本機目錄(SAF tree URI)。
+     * 使用獨立的 SFTP channel,不佔用全域 mutex,下載期間 terminal 仍可使用。
+     * onProgress(檔名, 已完成數) 於每個檔案完成時呼叫。
+     * @return 下載的檔案總數
+     */
+    suspend fun downloadFolder(
+        remotePath: String,
+        treeUri: android.net.Uri,
+        onProgress: (String, Int) -> Unit,
+    ): Int = withContext(Dispatchers.IO) {
+        val client = requireClient()
+        val rootDoc = androidx.documentfile.provider.DocumentFile.fromTreeUri(context, treeUri)
+            ?: throw IllegalStateException("無法存取所選的本機資料夾")
+        val rootName = remotePath.trimEnd('/').substringAfterLast('/').ifBlank { "download" }
+        val destRoot = rootDoc.createDirectory(rootName)
+            ?: throw IllegalStateException("無法在所選位置建立資料夾「$rootName」")
+
+        var count = 0
+        client.newSFTPClient().use { sftp ->
+            fun recurse(remote: String, localDir: androidx.documentfile.provider.DocumentFile) {
+                for (info in sftp.ls(remote)) {
+                    if (info.name == "." || info.name == "..") continue
+                    val childRemote = remote.trimEnd('/') + "/" + info.name
+                    if (info.attributes.type == FileMode.Type.DIRECTORY) {
+                        val sub = localDir.createDirectory(info.name) ?: continue
+                        recurse(childRemote, sub)
+                    } else {
+                        val mime = java.net.URLConnection
+                            .guessContentTypeFromName(info.name)
+                            ?: "application/octet-stream"
+                        val outFile = localDir.createFile(mime, info.name) ?: continue
+                        context.contentResolver.openOutputStream(outFile.uri)?.use { os ->
+                            val rf = sftp.open(childRemote)
+                            try {
+                                rf.RemoteFileInputStream().use { it.copyTo(os) }
+                            } finally {
+                                rf.close()
+                            }
+                        }
+                        count++
+                        onProgress(info.name, count)
+                    }
+                }
+            }
+            recurse(remotePath, destRoot)
+        }
+        count
+    }
+
     suspend fun writeFile(path: String, content: String) {
         withContext(Dispatchers.IO) {
             mutex.withLock {

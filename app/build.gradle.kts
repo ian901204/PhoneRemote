@@ -64,6 +64,7 @@ dependencies {
 
     // DataStore
     implementation("androidx.datastore:datastore-preferences:1.1.1")
+    implementation("androidx.documentfile:documentfile:1.0.1")
 
     // SSH (sshj + BouncyCastle:完整支援加密 OpenSSH 私鑰)
     implementation("com.hierynomus:sshj:0.38.0")

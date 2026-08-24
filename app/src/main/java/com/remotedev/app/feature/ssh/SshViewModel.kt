@@ -170,6 +170,46 @@ class SshViewModel @Inject constructor(
         ssh.pendingTerminalPath = path
     }
 
+    // ---- 資料夾下載 ----
+
+    data class DownloadState(
+        val folder: String,
+        val currentFile: String = "",
+        val count: Int = 0,
+        val done: Boolean = false,
+        val error: String? = null,
+    )
+
+    private val _downloadState = MutableStateFlow<DownloadState?>(null)
+    val downloadState: StateFlow<DownloadState?> = _downloadState.asStateFlow()
+
+    private var downloadJob: Job? = null
+
+    /** 遞迴下載遠端資料夾到本機 SAF tree URI(下載進行中會忽略新的請求) */
+    fun downloadFolder(remotePath: String, treeUri: android.net.Uri) {
+        val active = downloadJob?.isActive == true && _downloadState.value?.done != true
+        if (active) return
+        downloadJob = viewModelScope.launch(Dispatchers.IO) {
+            _downloadState.value = DownloadState(folder = remotePath)
+            try {
+                val n = ssh.downloadFolder(remotePath, treeUri) { file, c ->
+                    _downloadState.update { it?.copy(currentFile = file, count = c) }
+                }
+                _downloadState.update { it?.copy(done = true, count = n, currentFile = "") }
+            } catch (e: Exception) {
+                _downloadState.update {
+                    it?.copy(done = true, currentFile = "", error = e.message ?: e.toString())
+                }
+            }
+        }
+    }
+
+    /** 關閉下載進度提示(下載仍會在背景完成) */
+    fun dismissDownloadState() {
+        _downloadState.value = null
+    }
+
+
     /** Terminal 頁呼叫:取出待切換目錄(一次性) */
     fun consumePendingTerminalPath(): String? = ssh.consumePendingTerminalPath()
 
