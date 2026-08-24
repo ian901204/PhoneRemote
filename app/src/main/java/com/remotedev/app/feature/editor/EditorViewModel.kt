@@ -89,19 +89,18 @@ class EditorViewModel @Inject constructor(
     }
 
     /** 依副檔名回傳 TextMate language scope。 */
-    fun languageScopeFor(path: String): String {
+    /** 對應內建 TextMate grammar 的 scope;不支援的副檔名回傳 null(純文字)。 */
+    fun languageScopeFor(path: String): String? {
         val ext = path.substringAfterLast('.', "").lowercase()
         return when (ext) {
             "kt", "kts" -> "source.kotlin"
             "py" -> "source.python"
-            "js" -> "source.js"
-            "ts" -> "source.ts"
+            "js", "jsx", "ts", "tsx" -> "source.js"
             "java" -> "source.java"
-            "json" -> "source.json"
             "xml" -> "text.xml"
-            "md" -> "text.html.markdown"
-            "sh", "bash" -> "source.shell"
-            else -> "text.plain"
+            "html", "htm" -> "text.html.basic"
+            "md", "markdown" -> "text.html.markdown"
+            else -> null
         }
     }
 }

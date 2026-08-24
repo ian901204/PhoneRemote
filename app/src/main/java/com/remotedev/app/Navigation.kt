@@ -91,7 +91,10 @@ fun RemoteDevNavHost() {
             modifier = Modifier.padding(innerPadding),
         ) {
             composable("editor") {
-                EditorScreen(path = null)
+                EditorScreen(
+                    path = null,
+                    onOpenFiles = { navController.navigate("files") { launchSingleTop = true } },
+                )
             }
             composable(
                 "editor?path={path}",
@@ -102,7 +105,10 @@ fun RemoteDevNavHost() {
                     },
                 ),
             ) { backStackEntry ->
-                EditorScreen(path = backStackEntry.arguments?.getString("path"))
+                EditorScreen(
+                    path = backStackEntry.arguments?.getString("path"),
+                    onOpenFiles = { navController.navigate("files") { launchSingleTop = true } },
+                )
             }
             composable("files") {
                 FileBrowserScreen(
