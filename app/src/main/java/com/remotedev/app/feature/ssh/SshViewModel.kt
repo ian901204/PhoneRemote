@@ -50,6 +50,15 @@ class SshViewModel @Inject constructor(
 
     private var shellReaderJob: Job? = null
 
+    init {
+        // 連線由 Singleton SshConnectionManager 持有;
+        // 不同頁面(Terminal/Files)各有自己的 ViewModel,初始化時同步實際連線狀態
+        if (ssh.isConnected()) {
+            _uiState.update { it.copy(connected = true, shellActive = ssh.getShell() != null) }
+            loadDir(_currentPath.value)
+        }
+    }
+
     fun connectFromSettings() {
         if (_uiState.value.connecting) return
         viewModelScope.launch {
