@@ -122,8 +122,9 @@ class SshViewModel @Inject constructor(
                         // 原始 bytes(含 ANSI 控制碼)直接交給 xterm.js 渲染
                         emitShellBytes(buf, n)
                     }
-                    _uiState.update { it.copy(shellActive = false) }
-                    emitShellText("\n[Shell 已結束]\n")
+                    // shell 結束 = 連線已斷,標記斷線讓 UI 顯示重新連線
+                    _uiState.update { it.copy(shellActive = false, connected = false) }
+                    emitShellText("\n[連線已中斷,請點「重新連線」]\n")
                 }
             } catch (e: Exception) {
                 emitShellText("無法開啟互動 shell: ${e.message}\n")

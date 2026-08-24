@@ -17,6 +17,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -52,6 +56,7 @@ fun TerminalScreen(viewModel: SshViewModel = hiltViewModel()) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     var webView by remember { mutableStateOf<WebView?>(null) }
     var webReady by remember { mutableStateOf(false) }
+    var command by remember { mutableStateOf("") }
 
     // Files 頁「在此開啟 Terminal」:進入本頁時 cd 到指定目錄
     LaunchedEffect(uiState.connected, uiState.shellActive) {
@@ -81,7 +86,7 @@ fun TerminalScreen(viewModel: SshViewModel = hiltViewModel()) {
 
     Surface(modifier = Modifier.fillMaxSize(), color = TerminalBackground) {
         Column(modifier = Modifier.fillMaxSize()) {
-            if (!uiState.connected) {
+            if (!uiState.connected || !uiState.shellActive) {
                 Column(
                     modifier = Modifier.fillMaxSize().padding(16.dp),
                     verticalArrangement = Arrangement.Center,
@@ -94,11 +99,25 @@ fun TerminalScreen(viewModel: SshViewModel = hiltViewModel()) {
                             modifier = Modifier.padding(bottom = 8.dp),
                         )
                     }
+                    if (uiState.connected && !uiState.shellActive && !uiState.connecting) {
+                        Text(
+                            text = "連線已中斷",
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(bottom = 8.dp),
+                        )
+                    }
                     Button(
-                        onClick = { viewModel.connectFromSettings() },
+                        onClick = {
+                            viewModel.disconnect()
+                            viewModel.connectFromSettings()
+                        },
                         enabled = !uiState.connecting,
                     ) {
-                        Text(if (uiState.connecting) "連線中..." else "連線")
+                        Text(
+                            if (uiState.connecting) "連線中..."
+                            else if (uiState.connected) "重新連線"
+                            else "連線",
+                        )
                     }
                 }
             } else {
@@ -106,9 +125,20 @@ fun TerminalScreen(viewModel: SshViewModel = hiltViewModel()) {
                 AndroidView(
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                     factory = { ctx ->
+                        webReady = false
                         WebView(ctx).apply {
                             settings.javaScriptEnabled = true
                             settings.domStorageEnabled = true
+                            isFocusable = true
+                            isFocusableInTouchMode = true
+                            // 點終端區域時喚起鍵盤(部分裝置 WebView 不會自動彈出)
+                            setOnTouchListener { v, _ ->
+                                v.requestFocus()
+                                val imm = ctx.getSystemService(android.content.Context.INPUT_METHOD_SERVICE)
+                                    as android.view.inputmethod.InputMethodManager
+                                imm.showSoftInput(v, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+                                false
+                            }
                             addJavascriptInterface(object {
                                 @JavascriptInterface
                                 fun onInput(b64: String) {
@@ -141,6 +171,34 @@ fun TerminalScreen(viewModel: SshViewModel = hiltViewModel()) {
                         OutlinedButton(onClick = { viewModel.sendSpecialKey(key) }) {
                             Text(label, style = MaterialTheme.typography.labelSmall)
                         }
+                    }
+                }
+
+                // 指令輸入列(送出即進 shell)
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextField(
+                        value = command,
+                        onValueChange = { command = it },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        placeholder = { Text("輸入指令(或點上方終端直接打字)") },
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                        keyboardActions = KeyboardActions(onSend = {
+                            viewModel.sendCommand(command)
+                            command = ""
+                        }),
+                    )
+                    Button(
+                        onClick = {
+                            viewModel.sendCommand(command)
+                            command = ""
+                        },
+                        modifier = Modifier.padding(start = 8.dp),
+                    ) {
+                        Text("送出")
                     }
                 }
             }
