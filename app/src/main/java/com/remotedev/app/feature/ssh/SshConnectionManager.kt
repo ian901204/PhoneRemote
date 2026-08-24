@@ -1,18 +1,20 @@
 package com.remotedev.app.feature.ssh
 
-import com.jcraft.jsch.ChannelExec
-import com.jcraft.jsch.ChannelSftp
-import com.jcraft.jsch.JSch
-import com.jcraft.jsch.JSchException
-import com.jcraft.jsch.KeyPair
-import com.jcraft.jsch.Session
+import android.content.Context
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import java.io.ByteArrayInputStream
-import java.util.Properties
-import java.util.Vector
+import net.schmizz.sshj.SSHClient
+import net.schmizz.sshj.sftp.FileMode
+import net.schmizz.sshj.sftp.OpenMode
+import net.schmizz.sshj.transport.verification.PromiscuousVerifier
+import net.schmizz.sshj.userauth.UserAuthException
+import org.bouncycastle.jce.provider.BouncyCastleProvider
+import java.io.File
+import java.security.Security
+import java.util.EnumSet
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -23,14 +25,21 @@ data class RemoteFile(
     val size: Long,
 )
 
+/**
+ * SSH 連線管理(sshj + BouncyCastle 實作)。
+ * 對加密的 OpenSSH 格式私鑰(bcrypt + aes-ctr)有完整支援,Android 上比 JSch 可靠。
+ * 所有方法皆執行緒安全(Mutex 保護),suspend 函數於 Dispatchers.IO 執行。
+ */
 @Singleton
-class SshConnectionManager @Inject constructor() {
-
+class SshConnectionManager @Inject constructor(
+    @ApplicationContext private val context: Context,
+) {
     private val mutex = Mutex()
-    private var session: Session? = null
-    private var sftp: ChannelSftp? = null
 
-    fun isConnected(): Boolean = session?.isConnected == true
+    @Volatile
+    private var ssh: SSHClient? = null
+
+    fun isConnected(): Boolean = ssh?.let { it.isConnected && it.isAuthenticated } == true
 
     suspend fun connect(
         host: String,
@@ -43,190 +52,171 @@ class SshConnectionManager @Inject constructor() {
         withContext(Dispatchers.IO) {
             mutex.withLock {
                 disconnectLocked()
-                val jsch = JSch()
-                var keyDiag = ""
-                if (!privateKey.isNullOrBlank()) {
-                    // 正規化:統一換行、去頭尾空白、補結尾換行(PEM/OpenSSH 解析需要)
-                    val normalizedKey = privateKey
-                        .replace("\r\n", "\n")
-                        .replace('\r', '\n')
-                        .trim() + "\n"
-                    val keyBytes = normalizedKey.toByteArray(Charsets.UTF_8)
-                    // 先本地解析驗證,取得金鑰類型/指紋/是否加密,便於診斷
-                    val kp = try {
-                        KeyPair.load(jsch, keyBytes, null)
-                    } catch (e: JSchException) {
-                        null
-                    }
-                    if (kp == null) {
-                        throw IllegalStateException(
-                            "私鑰解析失敗:內容不是有效的私鑰。" +
-                                "請確認匯入的是「私鑰」檔(不是 .pub 公開金鑰)," +
-                                "格式為 OpenSSH 或 PEM(BEGIN OPENSSH/RSA/EC PRIVATE KEY),不支援 PuTTY .ppk",
-                        )
-                    }
-                    keyDiag = "金鑰類型=${keyTypeNameOf(kp.keyType)}, 指紋=${kp.fingerPrint}, 加密=${kp.isEncrypted}"
-                    if (kp.isEncrypted && passphrase.isNullOrEmpty()) {
-                        kp.dispose()
-                        throw IllegalStateException("此私鑰已加密,請在設定中填寫 Passphrase($keyDiag)")
-                    }
-                    try {
-                        if (passphrase.isNullOrEmpty()) {
-                            jsch.addIdentity(user, keyBytes, null, null)
-                        } else {
-                            jsch.addIdentity(user, keyBytes, null, passphrase.toByteArray(Charsets.UTF_8))
-                        }
-                    } catch (e: JSchException) {
-                        kp.dispose()
-                        throw IllegalStateException(
-                            "私鑰解密失敗:${e.message}($keyDiag)。若私鑰有密碼請確認 Passphrase 正確",
-                            e,
-                        )
-                    }
-                    kp.dispose()
+                if (Security.getProvider(BouncyCastleProvider.PROVIDER_NAME) == null) {
+                    Security.addProvider(BouncyCastleProvider())
                 }
-                val newSession = jsch.getSession(user, host, port)
-                if (privateKey.isNullOrBlank() && !password.isNullOrEmpty()) {
-                    newSession.setPassword(password)
-                }
-                val config = Properties()
-                config["StrictHostKeyChecking"] = "no"
-                // 相容舊版 SSH server:預設演算法清單中補上 ssh-rsa(SHA-1)
-                // mwiede JSch 預設停用 ssh-rsa,舊 server 只支援它時會 Auth fail
-                config["PubkeyAcceptedAlgorithms"] =
-                    "ssh-ed25519,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,rsa-sha2-512,rsa-sha2-256,ssh-rsa"
-                config["server_host_key"] =
-                    "ssh-ed25519,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,rsa-sha2-512,rsa-sha2-256,ssh-rsa,ssh-dss"
-                newSession.setConfig(config)
+                val client = SSHClient()
+                client.addHostKeyVerifier(PromiscuousVerifier())
+                client.connectTimeout = 15_000
+                client.timeout = 15_000
+                client.connect(host, port)
+
+                val keyDiag = if (!privateKey.isNullOrBlank()) {
+                    val firstLine = privateKey.trim().lineSequence().firstOrNull().orEmpty()
+                    "金鑰標頭=$firstLine"
+                } else ""
+
                 try {
-                    newSession.connect(15_000)
-                } catch (e: JSchException) {
-                    val msg = e.message ?: ""
-                    if (msg.contains("Auth fail", ignoreCase = true)) {
-                        throw IllegalStateException(
-                            "SSH 認證失敗:$msg。$keyDiag。" +
-                                "請確認:1) 使用者名稱「$user」正確;" +
-                                "2) 此指紋對應的公鑰已加入 server 的 ~/.ssh/authorized_keys" +
-                                "(可在電腦上執行 ssh-keygen -lf 私鑰檔 比對指紋);" +
-                                "3) 若 key 有密碼,Passphrase 是否正確",
-                            e,
-                        )
+                    if (!privateKey.isNullOrBlank()) {
+                        // 正規化:統一換行、去頭尾空白、補結尾換行
+                        val normalizedKey = privateKey
+                            .replace("\r\n", "\n")
+                            .replace('\r', '\n')
+                            .trim() + "\n"
+                        // sshj 從檔案載入金鑰,先寫到私有暫存檔再刪除
+                        val tmp = File.createTempFile("remotedev_key", ".tmp", context.cacheDir)
+                        try {
+                            tmp.writeText(normalizedKey)
+                            tmp.setReadable(false, false)
+                            tmp.setReadable(true, true)
+                            val keyProvider = try {
+                                if (passphrase.isNullOrEmpty()) {
+                                    client.loadKeys(tmp.absolutePath)
+                                } else {
+                                    client.loadKeys(tmp.absolutePath, passphrase)
+                                }
+                            } catch (e: Exception) {
+                                throw IllegalStateException(
+                                    "私鑰解析/解密失敗:${e.message}($keyDiag)。" +
+                                        "請確認是 OpenSSH 或 PEM 格式的「私鑰」" +
+                                        "(BEGIN OPENSSH/RSA/EC PRIVATE KEY),不是 .pub 公鑰;" +
+                                        "不支援 PuTTY .ppk;若私鑰有密碼請確認 Passphrase 正確",
+                                    e,
+                                )
+                            }
+                            client.authPublickey(user, keyProvider)
+                        } finally {
+                            tmp.delete()
+                        }
+                    } else if (!password.isNullOrEmpty()) {
+                        client.authPassword(user, password)
+                    } else {
+                        throw IllegalStateException("請先在設定中填寫密碼或匯入私鑰")
                     }
+
+                    if (!client.isAuthenticated) {
+                        throw IllegalStateException("SSH 認證失敗:server 未接受認證($keyDiag)")
+                    }
+                } catch (e: UserAuthException) {
+                    client.disconnect()
+                    throw IllegalStateException(
+                        "SSH 認證失敗:${e.message}($keyDiag)。" +
+                            "請確認:1) 使用者名稱「$user」正確;" +
+                            "2) 此私鑰對應的公鑰已加入 server 的 ~/.ssh/authorized_keys;" +
+                            "3) 若 key 有密碼,Passphrase 是否正確",
+                        e,
+                    )
+                } catch (e: IllegalStateException) {
+                    client.disconnect()
                     throw e
+                } catch (e: Exception) {
+                    client.disconnect()
+                    throw IllegalStateException("SSH 連線失敗:${e.message}", e)
                 }
 
-                val channel = newSession.openChannel("sftp") as ChannelSftp
-                channel.connect(15_000)
-
-                session = newSession
-                sftp = channel
+                ssh = client
             }
         }
     }
 
     fun disconnect() {
-        // Safe to call from non-suspend contexts.
-        runCatching {
-            sftp?.let { if (it.isConnected) it.disconnect() }
-            session?.let { if (it.isConnected) it.disconnect() }
-        }
-        sftp = null
-        session = null
+        runCatching { ssh?.disconnect() }
+        ssh = null
     }
 
     private fun disconnectLocked() {
-        disconnect()
+        runCatching { ssh?.disconnect() }
+        ssh = null
     }
 
+    private fun requireClient(): SSHClient =
+        ssh?.takeIf { it.isConnected && it.isAuthenticated }
+            ?: throw IllegalStateException("尚未連線,請先到 Terminal 頁連線")
+
     suspend fun exec(command: String): String = withContext(Dispatchers.IO) {
-        val currentSession = mutex.withLock {
-            session?.takeIf { it.isConnected } ?: throw IllegalStateException("尚未連線")
-        }
-        val channel = currentSession.openChannel("exec") as ChannelExec
-        try {
-            channel.setCommand(command)
-            val input = channel.inputStream
-            val err = channel.errStream
-            channel.connect(15_000)
-            val sb = StringBuilder()
-            val buffer = ByteArray(4096)
-            while (true) {
-                while (input.available() > 0) {
-                    val n = input.read(buffer)
-                    if (n < 0) break
-                    sb.append(String(buffer, 0, n, Charsets.UTF_8))
-                }
-                while (err.available() > 0) {
-                    val n = err.read(buffer)
-                    if (n < 0) break
-                    sb.append(String(buffer, 0, n, Charsets.UTF_8))
-                }
-                if (channel.isClosed) {
-                    // Drain any remaining bytes after the channel closes.
-                    while (input.available() > 0) {
-                        val n = input.read(buffer)
-                        if (n < 0) break
-                        sb.append(String(buffer, 0, n, Charsets.UTF_8))
+        mutex.withLock {
+            val client = requireClient()
+            client.startSession().use { sess ->
+                val cmd = sess.exec(command)
+                val out = cmd.inputStream.readBytes().decodeToString()
+                val err = cmd.errorStream.readBytes().decodeToString()
+                cmd.join()
+                val combined = buildString {
+                    append(out)
+                    if (err.isNotBlank()) {
+                        if (isNotEmpty() && !endsWith("\n")) append("\n")
+                        append(err)
                     }
-                    while (err.available() > 0) {
-                        val n = err.read(buffer)
-                        if (n < 0) break
-                        sb.append(String(buffer, 0, n, Charsets.UTF_8))
-                    }
-                    break
                 }
-                Thread.sleep(100)
+                combined.ifBlank { "(無輸出)" }
             }
-            sb.toString()
-        } finally {
-            channel.disconnect()
         }
     }
 
     suspend fun listFiles(path: String): List<RemoteFile> = withContext(Dispatchers.IO) {
-        val channel = mutex.withLock {
-            sftp?.takeIf { it.isConnected } ?: throw IllegalStateException("尚未連線")
+        mutex.withLock {
+            val client = requireClient()
+            client.newSFTPClient().use { sftp ->
+                val base = if (path.isBlank()) "." else path
+                sftp.ls(base)
+                    .filter { it.name != "." && it.name != ".." }
+                    .map { info ->
+                        RemoteFile(
+                            name = info.name,
+                            path = base.trimEnd('/') + "/" + info.name,
+                            isDirectory = info.attributes.type == FileMode.Type.DIRECTORY,
+                            size = info.attributes.size,
+                        )
+                    }
+                    .sortedWith(compareByDescending<RemoteFile> { it.isDirectory }.thenBy { it.name })
+            }
         }
-        @Suppress("UNCHECKED_CAST")
-        val entries = channel.ls(path) as Vector<ChannelSftp.LsEntry>
-        entries.mapNotNull { entry ->
-            val name = entry.filename
-            if (name == "." || name == "..") return@mapNotNull null
-            RemoteFile(
-                name = name,
-                path = if (path.endsWith("/")) path + name else "$path/$name",
-                isDirectory = entry.attrs.isDir,
-                size = entry.attrs.size,
-            )
-        }.sortedWith(compareByDescending<RemoteFile> { it.isDirectory }.thenBy { it.name })
     }
 
     suspend fun readFile(path: String): String = withContext(Dispatchers.IO) {
-        val channel = mutex.withLock {
-            sftp?.takeIf { it.isConnected } ?: throw IllegalStateException("尚未連線")
-        }
-        channel.get(path).use { input ->
-            input.readBytes().toString(Charsets.UTF_8)
+        mutex.withLock {
+            val client = requireClient()
+            client.newSFTPClient().use { sftp ->
+                val file = sftp.open(path)
+                try {
+                    file.RemoteFileInputStream().use { input ->
+                        input.readBytes().decodeToString()
+                    }
+                } finally {
+                    file.close()
+                }
+            }
         }
     }
 
     suspend fun writeFile(path: String, content: String) {
         withContext(Dispatchers.IO) {
-            val channel = mutex.withLock {
-                sftp?.takeIf { it.isConnected } ?: throw IllegalStateException("尚未連線")
-            }
-            ByteArrayInputStream(content.toByteArray(Charsets.UTF_8)).use { input ->
-                channel.put(input, path)
+            mutex.withLock {
+                val client = requireClient()
+                client.newSFTPClient().use { sftp ->
+                    val file = sftp.open(
+                        path,
+                        EnumSet.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC),
+                    )
+                    try {
+                        file.RemoteFileOutputStream().use { output ->
+                            output.write(content.toByteArray(Charsets.UTF_8))
+                        }
+                    } finally {
+                        file.close()
+                    }
+                }
             }
         }
     }
-}
-
-private fun keyTypeNameOf(type: Int): String = when (type) {
-    KeyPair.RSA -> "RSA"
-    KeyPair.DSA -> "DSA"
-    KeyPair.ECDSA -> "ECDSA"
-    KeyPair.ED25519 -> "ED25519"
-    KeyPair.ED448 -> "ED448"
-    else -> "未知($type)"
 }

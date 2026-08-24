@@ -65,8 +65,12 @@ dependencies {
     // DataStore
     implementation("androidx.datastore:datastore-preferences:1.1.1")
 
-    // SSH
-    implementation("com.github.mwiede:jsch:0.2.17")
+    // SSH (sshj + BouncyCastle:完整支援加密 OpenSSH 私鑰)
+    implementation("com.hierynomus:sshj:0.38.0")
+    implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
+    implementation("net.i2p.crypto:eddsa:0.3.0")
+    implementation("org.slf4j:slf4j-api:2.0.13")
+    implementation("org.slf4j:slf4j-simple:2.0.13")
 
     // Editor
     implementation("io.github.Rosemoe.sora-editor:editor:0.23.2")
