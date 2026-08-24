@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -75,7 +76,8 @@ class AiRepository @Inject constructor(
                         .jsonObject["choices"]?.jsonArray
                         ?.firstOrNull()?.jsonObject
                         ?.get("delta")?.jsonObject
-                        ?.get("content")?.jsonPrimitive?.content
+                        // contentOrNull:JSON null 會回傳 null,而非字串 "null"
+                        ?.get("content")?.jsonPrimitive?.contentOrNull
                 }.getOrNull()
                 if (!deltaContent.isNullOrEmpty()) emit(deltaContent)
             }
