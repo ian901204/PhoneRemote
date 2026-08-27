@@ -85,7 +85,7 @@ class ChatViewModel @Inject constructor(
                         }
                     }
 
-                val apiMessages = mutableListOf(
+                val apiMessages = (mutableListOf(
                     buildJsonObject {
                         put("role", "system")
                         put(
@@ -96,7 +96,7 @@ class ChatViewModel @Inject constructor(
                                 "回答使用繁體中文,簡潔扼要。",
                         )
                     },
-                ) + history
+                ) + history).toMutableList()
 
                 val maxRounds = 12
                 var finalText: String? = null

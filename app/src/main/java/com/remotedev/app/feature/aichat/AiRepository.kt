@@ -9,7 +9,6 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.content
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -117,7 +116,7 @@ class AiRepository @Inject constructor(
                     put("parameters", buildJsonObject {
                         put("type", "object")
                         put("properties", props)
-                        put("required", buildJsonArray { required.forEach { add(it) } })
+                        put("required", buildJsonArray { required.forEach { add(kotlinx.serialization.json.JsonPrimitive(it)) } })
                     })
                 })
             })
