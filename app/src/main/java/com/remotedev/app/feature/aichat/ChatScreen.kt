@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -25,6 +26,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TopAppBar
@@ -46,6 +48,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 fun ChatScreen(viewModel: ChatViewModel = hiltViewModel()) {
     val messages by viewModel.messages.collectAsState()
     val isGenerating by viewModel.isGenerating.collectAsState()
+    val agentMode by viewModel.agentMode.collectAsState()
     var input by remember { mutableStateOf("") }
 
     val listState = rememberLazyListState()
@@ -60,6 +63,24 @@ fun ChatScreen(viewModel: ChatViewModel = hiltViewModel()) {
             TopAppBar(
                 title = { Text("AI Chat") },
                 actions = {
+                    // Agent 模式開關:AI 可呼叫 SSH 工具自主完成任務
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Filled.SmartToy,
+                            contentDescription = null,
+                            tint = if (agentMode) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Switch(
+                            checked = agentMode,
+                            onCheckedChange = { viewModel.toggleAgentMode() },
+                            enabled = !isGenerating,
+                        )
+                    }
                     IconButton(
                         onClick = { viewModel.clear() },
                         enabled = !isGenerating,
@@ -129,7 +150,30 @@ fun ChatScreen(viewModel: ChatViewModel = hiltViewModel()) {
 @Composable
 private fun MessageBubble(message: ChatMessage) {
     val isUser = message.role == "user"
+    val isTool = message.role == "tool"
     val maxBubbleWidth = (LocalConfiguration.current.screenWidthDp * 0.8f).dp
+
+    if (isTool) {
+        // 工具呼叫/結果:小型等寬字提示,置中
+        Box(modifier = Modifier.fillMaxWidth()) {
+            Surface(
+                color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.5f),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .widthIn(max = maxBubbleWidth),
+            ) {
+                Text(
+                    text = message.content,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                )
+            }
+        }
+        return
+    }
 
     Box(modifier = Modifier.fillMaxWidth()) {
         Surface(
